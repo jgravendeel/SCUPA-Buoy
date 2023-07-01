@@ -62,12 +62,13 @@ void try_parse_observer_message();
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#define WEARABLE_TO_BUOY_BUFF_SIZE 255 // limited to uint8_t
+#define WEARABLE_TO_BUOY_BUFF_SIZE 255
 #define GPS_DATA_BUFF_SIZE 128
-#define OBSERVER_TO_BUOY_BUFF_SIZE 255 // limited to uint8_t
+#define OBSERVER_TO_BUOY_BUFF_SIZE 255
 
-uint8_t wearable_to_buoy_buff[WEARABLE_TO_BUOY_BUFF_SIZE] = { 0 };
-uint8_t gps_data_buff[GPS_DATA_BUFF_SIZE] = { 0 };
+// make use of 2 buffers per uart to hopefully prevent race conditions from the interrupt
+uint8_t wearable_to_buoy_buffs[2][WEARABLE_TO_BUOY_BUFF_SIZE] = { { 0 }, { 0 } };
+uint8_t gps_data_buffs[2][GPS_DATA_BUFF_SIZE] = { { 0 }, { 0 } };
 uint8_t observer_to_buoy_buff[OBSERVER_TO_BUOY_BUFF_SIZE] = { 0 };
 uint8_t last_coords[64] = { 0 };
 
@@ -134,6 +135,9 @@ int main(void) {
         Error_Handler();
     }
     LoRa_startReceiving(&lora_parser);
+
+    HAL_UART_Receive_IT(&huart1, wearable_to_buoy_buffs[0], 1);
+    HAL_UART_Receive_IT(&huart5, gps_data_buffs[0], 1);
     /* USER CODE END 2 */
 
     /* Infinite loop */
@@ -216,23 +220,35 @@ void send_to_wearable(uint8_t *buff) {
 }
 
 void try_parse_wearable_message() {
-    memset(wearable_to_buoy_buff, 0, WEARABLE_TO_BUOY_BUFF_SIZE);
-    HAL_UART_Receive(&huart1, wearable_to_buoy_buff, WEARABLE_TO_BUOY_BUFF_SIZE,
-            100);
+    for (int i = 0; i < 2; ++i) {
+        char *delimiter = strchr((char*) wearable_to_buoy_buffs[i], '\n');
 
-    // basic filter for valid messages
-    if (wearable_to_buoy_buff[0] != '|') {
-        return;
+        // basic filter for valid messages
+        if (delimiter != NULL && wearable_to_buoy_buffs[i][0] == '|') {
+            send_to_observer(wearable_to_buoy_buffs[i]);
+            memset(wearable_to_buoy_buffs[i], 0, WEARABLE_TO_BUOY_BUFF_SIZE);
+        }
     }
-
-    send_to_observer(wearable_to_buoy_buff);
 }
 
 void try_parse_gps_data() {
-    memset(gps_data_buff, 0, GPS_DATA_BUFF_SIZE);
-    HAL_UART_Receive(&huart5, gps_data_buff, GPS_DATA_BUFF_SIZE, 100);
+    uint8_t *valid_buff = NULL;
+    for (int i = 0; i < 2; ++i) {
+        char *delimiter = strchr((char*) gps_data_buffs[i], '|');
+        if (delimiter != NULL) {
+            *delimiter = 0;
+            valid_buff = gps_data_buffs[i];
+            break;
+        }
+    }
 
-    nmea_parse(&gps_parser, gps_data_buff);
+    if (valid_buff == NULL) {
+        return;
+    }
+
+    nmea_parse(&gps_parser, valid_buff);
+    memset(valid_buff, 0, GPS_DATA_BUFF_SIZE);
+
     if (!gps_parser.fix) {
         HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_SET);
         return;
@@ -275,6 +291,45 @@ void try_parse_observer_message() {
     }
 
     send_to_wearable(observer_to_buoy_buff);
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    // from wearable
+    if (huart == &huart1) {
+        static int current_buff = 0;
+        static int offset = 0;
+        offset = (offset + 1) % WEARABLE_TO_BUOY_BUFF_SIZE;
+
+        // message from wearable always ends with '\n'
+        // switch buffers and reset offset
+        if (wearable_to_buoy_buffs[current_buff][offset - 1] == '\n') {
+            current_buff = 1 - current_buff;
+            offset = 0;
+        }
+
+        // receive next character on this uart
+        HAL_UART_Receive_IT(&huart1,
+                &wearable_to_buoy_buffs[current_buff][offset], 1);
+    }
+
+    // from gps module
+    if (huart == &huart5) {
+        static int current_buff = 0;
+        static int offset = 0;
+        offset = (offset + 1) % GPS_DATA_BUFF_SIZE;
+
+        // data from gps module contains multiple '\n' but always starts with '$'
+        // replace '$' with custom delimiter '|', switch buffers and reset offset to 1
+        if (gps_data_buffs[current_buff][offset - 1] == '$') {
+            gps_data_buffs[current_buff][offset - 1] = '|';
+            current_buff = 1 - current_buff;
+            offset = 1;
+            gps_data_buffs[current_buff][0] = '$';
+        }
+
+        // receive next character on this uart
+        HAL_UART_Receive_IT(&huart5, &gps_data_buffs[current_buff][offset], 1);
+    }
 }
 /* USER CODE END 4 */
 
