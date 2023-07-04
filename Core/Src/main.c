@@ -19,7 +19,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
-#include "rtc.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
@@ -105,7 +104,6 @@ int main(void) {
     MX_GPIO_Init();
     MX_SPI1_Init();
     MX_USART1_UART_Init();
-    MX_RTC_Init();
     MX_SPI2_Init();
     MX_ADC1_Init();
     MX_TIM3_Init();
@@ -169,13 +167,12 @@ void SystemClock_Config(void) {
     /** Initializes the RCC Oscillators according to the specified parameters
      * in the RCC_OscInitTypeDef structure.
      */
-    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE
-            | RCC_OSCILLATORTYPE_LSE;
-    RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-    RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
     RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-    RCC_OscInitStruct.PLL.PLLM = 4;
+    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+    RCC_OscInitStruct.PLL.PLLM = 8;
     RCC_OscInitStruct.PLL.PLLN = 180;
     RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
     RCC_OscInitStruct.PLL.PLLQ = 2;
@@ -221,11 +218,25 @@ void send_to_wearable(uint8_t *buff) {
 
 void try_parse_wearable_message() {
     for (int i = 0; i < 2; ++i) {
-        char *delimiter = strchr((char*) wearable_to_buoy_buffs[i], '\n');
+        uint8_t *initial_separator = NULL;
+        for (int j = 0; j < WEARABLE_TO_BUOY_BUFF_SIZE; ++j) {
+            if (wearable_to_buoy_buffs[i][j] == '|') {
+                initial_separator = &wearable_to_buoy_buffs[i][j];
+                break;
+            }
+        }
+
+        uint8_t *delimiter = NULL;
+        for (int j = 0; j < WEARABLE_TO_BUOY_BUFF_SIZE; ++j) {
+            if (wearable_to_buoy_buffs[i][j] == '\n') {
+                delimiter = &wearable_to_buoy_buffs[i][j];
+                break;
+            }
+        }
 
         // basic filter for valid messages
-        if (delimiter != NULL && wearable_to_buoy_buffs[i][0] == '|') {
-            send_to_observer(wearable_to_buoy_buffs[i]);
+        if (delimiter != NULL && initial_separator != NULL) {
+            send_to_observer(initial_separator);
             memset(wearable_to_buoy_buffs[i], 0, WEARABLE_TO_BUOY_BUFF_SIZE);
         }
     }
@@ -234,7 +245,14 @@ void try_parse_wearable_message() {
 void try_parse_gps_data() {
     uint8_t *valid_buff = NULL;
     for (int i = 0; i < 2; ++i) {
-        char *delimiter = strchr((char*) gps_data_buffs[i], '|');
+        uint8_t *delimiter = NULL;
+        for (int j = 0; j < GPS_DATA_BUFF_SIZE; ++j) {
+            if (gps_data_buffs[i][j] == '|') {
+                delimiter = &gps_data_buffs[i][j];
+                break;
+            }
+        }
+
         if (delimiter != NULL) {
             *delimiter = 0;
             valid_buff = gps_data_buffs[i];
@@ -282,6 +300,12 @@ void try_parse_gps_data() {
 }
 
 void try_parse_observer_message() {
+    static int last_lora_check = 0;
+    if (HAL_GetTick() - last_lora_check < 500) {
+        return;
+    }
+    last_lora_check = HAL_GetTick();
+
     LoRa_receive(&lora_parser, observer_to_buoy_buff,
     OBSERVER_TO_BUOY_BUFF_SIZE);
 

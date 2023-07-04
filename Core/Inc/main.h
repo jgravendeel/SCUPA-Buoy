@@ -79,6 +79,8 @@ void Error_Handler(void);
 #define BTN4_GPIO_Port GPIOC
 #define USART1_RTS_Pin GPIO_PIN_12
 #define USART1_RTS_GPIO_Port GPIOA
+#define WEARABLE_EN_Pin GPIO_PIN_10
+#define WEARABLE_EN_GPIO_Port GPIOC
 #define LED1_Pin GPIO_PIN_4
 #define LED1_GPIO_Port GPIOB
 #define LED2_Pin GPIO_PIN_5
