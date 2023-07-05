@@ -64,12 +64,15 @@ void try_parse_observer_message();
 #define WEARABLE_TO_BUOY_BUFF_SIZE 255
 #define GPS_DATA_BUFF_SIZE 128
 #define OBSERVER_TO_BUOY_BUFF_SIZE 255
+#define LORA_DELAY 1000
 
 // make use of 2 buffers per uart to hopefully prevent race conditions from the interrupt
 uint8_t wearable_to_buoy_buffs[2][WEARABLE_TO_BUOY_BUFF_SIZE] = { { 0 }, { 0 } };
 uint8_t gps_data_buffs[2][GPS_DATA_BUFF_SIZE] = { { 0 }, { 0 } };
 uint8_t observer_to_buoy_buff[OBSERVER_TO_BUOY_BUFF_SIZE] = { 0 };
 uint8_t last_coords[64] = { 0 };
+
+uint32_t last_lora_operation = 0;
 
 GPS gps_parser;
 LoRa lora_parser;
@@ -134,6 +137,7 @@ int main(void) {
     }
     LoRa_startReceiving(&lora_parser);
 
+    // start receiving uart through interrupt
     HAL_UART_Receive_IT(&huart1, wearable_to_buoy_buffs[0], 1);
     HAL_UART_Receive_IT(&huart5, gps_data_buffs[0], 1);
     /* USER CODE END 2 */
@@ -204,6 +208,9 @@ void SystemClock_Config(void) {
 /* USER CODE BEGIN 4 */
 void send_to_observer(uint8_t *buff) {
     HAL_GPIO_WritePin(LED4_GPIO_Port, LED4_Pin, GPIO_PIN_SET);
+    while (HAL_GetTick() - last_lora_operation < LORA_DELAY) {
+    }
+    last_lora_operation = HAL_GetTick();
     LoRa_transmit(&lora_parser, buff, strlen((char*) buff), 5000);
     HAL_GPIO_WritePin(LED4_GPIO_Port, LED4_Pin, GPIO_PIN_RESET);
 }
@@ -217,7 +224,9 @@ void send_to_wearable(uint8_t *buff) {
 }
 
 void try_parse_wearable_message() {
+    // try to find a valid message in one of the buffers
     for (int i = 0; i < 2; ++i) {
+        // start of the received content may contain gibberish, so try to find begin of actual message
         uint8_t *initial_separator = NULL;
         for (int j = 0; j < WEARABLE_TO_BUOY_BUFF_SIZE; ++j) {
             if (wearable_to_buoy_buffs[i][j] == '|') {
@@ -226,6 +235,7 @@ void try_parse_wearable_message() {
             }
         }
 
+        // delimiter '\n' is still needed to see if message is complete
         uint8_t *delimiter = NULL;
         for (int j = 0; j < WEARABLE_TO_BUOY_BUFF_SIZE; ++j) {
             if (wearable_to_buoy_buffs[i][j] == '\n') {
@@ -236,15 +246,17 @@ void try_parse_wearable_message() {
 
         // basic filter for valid messages
         if (delimiter != NULL && initial_separator != NULL) {
-            send_to_observer(initial_separator);
+            send_to_observer(initial_separator); // send from begin of message
             memset(wearable_to_buoy_buffs[i], 0, WEARABLE_TO_BUOY_BUFF_SIZE);
         }
     }
 }
 
 void try_parse_gps_data() {
+    // try to find a valid message in one of the buffers
     uint8_t *valid_buff = NULL;
     for (int i = 0; i < 2; ++i) {
+        // try to find custom delimiter '|'
         uint8_t *delimiter = NULL;
         for (int j = 0; j < GPS_DATA_BUFF_SIZE; ++j) {
             if (gps_data_buffs[i][j] == '|') {
@@ -254,7 +266,7 @@ void try_parse_gps_data() {
         }
 
         if (delimiter != NULL) {
-            *delimiter = 0;
+            *delimiter = 0; // if found, reset it to 0
             valid_buff = gps_data_buffs[i];
             break;
         }
@@ -300,11 +312,10 @@ void try_parse_gps_data() {
 }
 
 void try_parse_observer_message() {
-    static int last_lora_check = 0;
-    if (HAL_GetTick() - last_lora_check < 500) {
+    if (HAL_GetTick() - last_lora_operation < LORA_DELAY) {
         return;
     }
-    last_lora_check = HAL_GetTick();
+    last_lora_operation = HAL_GetTick();
 
     LoRa_receive(&lora_parser, observer_to_buoy_buff,
     OBSERVER_TO_BUOY_BUFF_SIZE);
