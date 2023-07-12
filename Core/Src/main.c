@@ -64,6 +64,9 @@ void try_parse_observer_message();
 #define WEARABLE_TO_BUOY_BUFF_SIZE 255
 #define GPS_DATA_BUFF_SIZE 128
 #define OBSERVER_TO_BUOY_BUFF_SIZE 255
+
+// when reading from the lora module in quick succession, data seems to get lost
+// this delay makes sure lora operations have at least this amount of time between them
 #define LORA_DELAY 1000
 
 // make use of 2 buffers per uart to hopefully prevent race conditions from the interrupt
@@ -72,6 +75,7 @@ uint8_t gps_data_buffs[2][GPS_DATA_BUFF_SIZE] = { { 0 }, { 0 } };
 uint8_t observer_to_buoy_buff[OBSERVER_TO_BUOY_BUFF_SIZE] = { 0 };
 uint8_t last_coords[64] = { 0 };
 
+// used in conjunction with LORA_DELAY
 uint32_t last_lora_operation = 0;
 
 GPS gps_parser;
@@ -129,7 +133,7 @@ int main(void) {
     lora_parser.overCurrentProtection = 100; // there are some legal limits to this, more research required, leave at default for now
     lora_parser.preamble = 8; // bits for synchronizing transmitter with receiver, default is probably fine
 
-    LoRa_reset(&lora_parser);
+    LoRa_reset(&lora_parser); // reset before init just in case, might not be necessary
     uint16_t lora_status = LoRa_init(&lora_parser);
     if (lora_status != LORA_OK) {
         HAL_GPIO_WritePin(LED4_GPIO_Port, LED4_Pin, GPIO_PIN_SET);
@@ -137,7 +141,7 @@ int main(void) {
     }
     LoRa_startReceiving(&lora_parser);
 
-    // start receiving uart through interrupt
+    // start receiving uart characters through interrupt
     HAL_UART_Receive_IT(&huart1, wearable_to_buoy_buffs[0], 1);
     HAL_UART_Receive_IT(&huart5, gps_data_buffs[0], 1);
     /* USER CODE END 2 */
@@ -217,6 +221,7 @@ void send_to_observer(uint8_t *buff) {
 
 void send_to_wearable(uint8_t *buff) {
     HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
+    // IMPORTANT: rts pin should be high while sending for PoD hardware
     HAL_GPIO_WritePin(USART1_RTS_GPIO_Port, USART1_RTS_Pin, GPIO_PIN_SET);
     HAL_UART_Transmit(&huart1, buff, strlen((char*) buff), 100);
     HAL_GPIO_WritePin(USART1_RTS_GPIO_Port, USART1_RTS_Pin, GPIO_PIN_RESET);
@@ -328,6 +333,7 @@ void try_parse_observer_message() {
     send_to_wearable(observer_to_buoy_buff);
 }
 
+// uart receive interrupt
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     // from wearable
     if (huart == &huart1) {
@@ -335,11 +341,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         static int offset = 0;
         offset = (offset + 1) % WEARABLE_TO_BUOY_BUFF_SIZE;
 
-        // message from wearable always ends with '\n'
-        // switch buffers and reset offset
+        // check if received character is the message delimiter '\n'
         if (wearable_to_buoy_buffs[current_buff][offset - 1] == '\n') {
-            current_buff = 1 - current_buff;
-            offset = 0;
+            current_buff = 1 - current_buff; // switch buffers
+            offset = 0; // reset offset
         }
 
         // receive next character on this uart
@@ -353,13 +358,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         static int offset = 0;
         offset = (offset + 1) % GPS_DATA_BUFF_SIZE;
 
-        // data from gps module contains multiple '\n' but always starts with '$'
-        // replace '$' with custom delimiter '|', switch buffers and reset offset to 1
+        // check if received character is '$' which all gps module messages start with
         if (gps_data_buffs[current_buff][offset - 1] == '$') {
-            gps_data_buffs[current_buff][offset - 1] = '|';
-            current_buff = 1 - current_buff;
-            offset = 1;
-            gps_data_buffs[current_buff][0] = '$';
+            gps_data_buffs[current_buff][offset - 1] = '|'; // replace '$' with custom delimiter '|'
+            current_buff = 1 - current_buff; // switch buffers
+            offset = 1; // reset offset to second character of message
+            gps_data_buffs[current_buff][0] = '$'; // mark begin of message in other buffer
         }
 
         // receive next character on this uart
