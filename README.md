@@ -22,4 +22,4 @@ As part of the SCUPA (Super Cool Underwater Positioning Apperatus) project, the 
 ## Other SCUPA parts
 
 * Wearable: https://github.com/pip12345/SCUPA-Wearable
-* Base station: *yet to be published*
+* Base station: https://github.com/LarissaBerkelder/MinorProject
